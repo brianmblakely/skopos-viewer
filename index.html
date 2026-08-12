@@ -165,9 +165,17 @@ async function fetchBody(path) {
   return raw.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
 }
 
+// Escape every value interpolated into HTML - quotes included, so hostile
+// frontmatter can never break out of an attribute (spec 2.4 scenario).
+function esc(value) {
+  return String(value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 // Minimal markdown: escape, then headings / bold / code / links / paragraphs.
 function md(text) {
-  let safe = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let safe = esc(text);
   safe = safe.replace(/```([\s\S]*?)```/g, (_, c) => `<pre>${c}</pre>`);
   safe = safe.replace(/`([^`\n]+)`/g, "<code>$1</code>");
   safe = safe.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
@@ -204,15 +212,15 @@ function render() {
     if (e.status !== "active") card.classList.add("dim");
     const links = ["issue", "pr", "commit", "repo"]
       .filter(k => e[k])
-      .map(k => `<a href="${e[k]}" target="_blank" rel="noopener">${k}</a>`)
+      .map(k => `<a href="${esc(e[k])}" target="_blank" rel="noopener">${k}</a>`)
       .join("");
     card.innerHTML =
-      `<h2>${e.title.replace(/</g, "&lt;")}</h2>
+      `<h2>${esc(e.title)}</h2>
        <div class="chips">
-         <span class="chip type ${e.type}">${e.type}</span>
-         <span class="chip">${e.status}</span>
-         <span class="chip">${e.agent}</span>
-         <span class="chip">${(e.created || "").slice(0, 10)}</span>
+         <span class="chip type ${esc(e.type)}">${esc(e.type)}</span>
+         <span class="chip">${esc(e.status)}</span>
+         <span class="chip">${esc(e.agent)}</span>
+         <span class="chip">${esc((e.created || "").slice(0, 10))}</span>
        </div>
        <div class="links">${links}</div>
        <div class="body hidden"></div>`;
@@ -240,7 +248,7 @@ function fillFilters() {
   const fill = (sel, values, label) => {
     const current = sel.value;
     sel.innerHTML = `<option value="">${label}</option>` +
-      [...new Set(values)].sort().map(v => `<option>${v}</option>`).join("");
+      [...new Set(values)].sort().map(v => `<option>${esc(v)}</option>`).join("");
     sel.value = current;
   };
   fill($("agentFilter"), entries.map(e => e.agent), "all agents");

@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Skopos</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1a2230; --muted: #67707f;
+    --line: #e3e6eb; --accent: #2563eb; --unread: #2563eb;
+    --plan: #7c3aed; --progress: #2563eb; --shipped: #059669; --review-request: #d97706;
+    --superseded: #9ca3af; --abandoned: #9ca3af;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10141b; --card: #1a2027; --ink: #e7ebf0; --muted: #8b95a3;
+      --line: #2a323d; --accent: #60a5fa; --unread: #60a5fa;
+      --plan: #a78bfa; --progress: #60a5fa; --shipped: #34d399; --review-request: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: var(--bg);
+    padding: calc(10px + env(safe-area-inset-top)) 16px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0 0 6px; font-size: 20px; }
+  header h1 small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  select, button {
+    font: inherit; font-size: 14px; color: var(--ink); background: var(--card);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+  }
+  button { cursor: pointer; }
+  #fetchedAt { color: var(--muted); font-size: 12px; }
+  main { max-width: 720px; margin: 0 auto; padding: 12px 12px 40px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 10px; cursor: pointer;
+  }
+  .card.unread { border-left: 3px solid var(--unread); }
+  .card h2 { margin: 0 0 6px; font-size: 16px; line-height: 1.35; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; }
+  .chip {
+    padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--muted); white-space: nowrap;
+  }
+  .chip.type { color: #fff; border: none; }
+  .chip.type.plan { background: var(--plan); }
+  .chip.type.progress { background: var(--progress); }
+  .chip.type.shipped { background: var(--shipped); }
+  .chip.type.review-request { background: var(--review-request); }
+  .card.dim { opacity: 0.55; }
+  .links { margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+  .links a { color: var(--accent); text-decoration: none; }
+  .body {
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line);
+    font-size: 15px; overflow-wrap: anywhere;
+  }
+  .body pre { overflow-x: auto; background: var(--bg); padding: 8px; border-radius: 8px; }
+  .body code { background: var(--bg); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+  .notice { color: var(--muted); text-align: center; padding: 32px 16px; }
+  /* PAT gate */
+  #gate { max-width: 420px; margin: 15vh auto 0; padding: 24px; }
+  #gate .card { cursor: default; }
+  #gate h2 { font-size: 18px; }
+  #gate p { color: var(--muted); font-size: 14px; }
+  #gate input {
+    width: 100%; font: inherit; padding: 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink); margin: 8px 0;
+  }
+  #gate button { width: 100%; background: var(--accent); color: #fff; border: none; padding: 10px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="hidden">
+  <div class="card">
+    <h2>Skopos viewer</h2>
+    <p>Enter a <strong>fine-grained</strong> GitHub token with access to
+    <code>brianmblakely/skopos</code> only, permission <strong>Contents:
+    Read-only</strong>. It is stored on this device and sent only to
+    <code>api.github.com</code>.</p>
+    <input id="patInput" type="password" placeholder="github_pat_..." autocomplete="off">
+    <button id="patSave">Save and load</button>
+    <p id="gateError" style="color:#dc2626"></p>
+    <p>Tip: Add to Home Screen keeps the token (and read state) durable on iOS.</p>
+  </div>
+</div>
+
+<header id="topbar" class="hidden">
+  <h1>Skopos <small>work in flight</small></h1>
+  <div class="toolbar">
+    <select id="agentFilter"><option value="">all agents</option></select>
+    <select id="repoFilter"><option value="">all repos</option></select>
+    <button id="refreshBtn">refresh</button>
+    <button id="forgetBtn" title="forget token">token</button>
+    <span id="fetchedAt"></span>
+  </div>
+</header>
+<main><div id="list"></div><div id="status" class="notice"></div></main>
+
+<script>
+"use strict";
+const OWNER_REPO = "brianmblakely/skopos";
+const API = `https://api.github.com/repos/${OWNER_REPO}/contents/`;
+const LS_PAT = "skopos_pat", LS_READ = "skopos_read", LS_CACHE = "skopos_index_cache",
+      LS_ETAG = "skopos_index_etag";
+
+let entries = [], readIds = new Set(JSON.parse(localStorage.getItem(LS_READ) || "[]"));
+
+const $ = (id) => document.getElementById(id);
+
+function headers() {
+  return {
+    "Authorization": "Bearer " + localStorage.getItem(LS_PAT),
+    "Accept": "application/vnd.github.raw+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
+
+function showGate(message) {
+  $("gate").classList.remove("hidden");
+  $("topbar").classList.add("hidden");
+  $("list").innerHTML = "";
+  $("status").textContent = "";
+  $("gateError").textContent = message || "";
+}
+
+function showList() {
+  $("gate").classList.add("hidden");
+  $("topbar").classList.remove("hidden");
+}
+
+async function fetchIndex(force) {
+  const opts = { headers: headers() };
+  const etag = localStorage.getItem(LS_ETAG);
+  if (etag && !force) opts.headers["If-None-Match"] = etag;
+  const res = await fetch(API + "index.json?ref=main", opts);
+  if (res.status === 304) return JSON.parse(localStorage.getItem(LS_CACHE) || "[]");
+  if (res.status === 401 || res.status === 403) throw new Error("auth");
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const text = await res.text();
+  const tag = res.headers.get("ETag");
+  try {
+    localStorage.setItem(LS_CACHE, text);
+    if (tag) localStorage.setItem(LS_ETAG, tag);
+  } catch (e) { /* storage full - live without cache */ }
+  return JSON.parse(text);
+}
+
+async function fetchBody(path) {
+  const res = await fetch(API + path.split("/").map(encodeURIComponent).join("/") + "?ref=main",
+                          { headers: headers() });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const raw = await res.text();
+  return raw.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+}
+
+// Minimal markdown: escape, then headings / bold / code / links / paragraphs.
+function md(text) {
+  let safe = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  safe = safe.replace(/```([\s\S]*?)```/g, (_, c) => `<pre>${c}</pre>`);
+  safe = safe.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  safe = safe.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  safe = safe.replace(/\[([^\]\n]+)\]\((https:\/\/[^)\s]+)\)/g,
+                      '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  safe = safe.replace(/^### (.*)$/gm, "<strong>$1</strong>");
+  safe = safe.replace(/^## (.*)$/gm, "<strong>$1</strong>");
+  safe = safe.replace(/^- (.*)$/gm, "&bull; $1");
+  return safe.split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
+}
+
+function markRead(id) {
+  readIds.add(id);
+  try { localStorage.setItem(LS_READ, JSON.stringify([...readIds])); } catch (e) {}
+}
+
+function repoName(entry) {
+  const url = entry.repo || entry.issue || entry.pr || entry.commit || "";
+  const m = url.match(/github\.com\/([^/]+\/[^/]+)/);
+  return m ? m[1] : "";
+}
+
+function render() {
+  const agent = $("agentFilter").value, repo = $("repoFilter").value;
+  const list = $("list");
+  list.innerHTML = "";
+  const shown = entries.filter(e =>
+    (!agent || e.agent === agent) && (!repo || repoName(e) === repo));
+  $("status").textContent = shown.length ? "" : "no increments match";
+  for (const e of shown) {
+    const card = document.createElement("div");
+    card.className = "card";
+    if (!readIds.has(e.id)) card.classList.add("unread");
+    if (e.status !== "active") card.classList.add("dim");
+    const links = ["issue", "pr", "commit", "repo"]
+      .filter(k => e[k])
+      .map(k => `<a href="${e[k]}" target="_blank" rel="noopener">${k}</a>`)
+      .join("");
+    card.innerHTML =
+      `<h2>${e.title.replace(/</g, "&lt;")}</h2>
+       <div class="chips">
+         <span class="chip type ${e.type}">${e.type}</span>
+         <span class="chip">${e.status}</span>
+         <span class="chip">${e.agent}</span>
+         <span class="chip">${(e.created || "").slice(0, 10)}</span>
+       </div>
+       <div class="links">${links}</div>
+       <div class="body hidden"></div>`;
+    card.addEventListener("click", async (ev) => {
+      if (ev.target.tagName === "A") { markRead(e.id); card.classList.remove("unread"); return; }
+      const body = card.querySelector(".body");
+      markRead(e.id); card.classList.remove("unread");
+      if (!body.classList.contains("hidden")) { body.classList.add("hidden"); return; }
+      if (!body.dataset.loaded) {
+        body.innerHTML = "<p>loading&hellip;</p>";
+        body.classList.remove("hidden");
+        try {
+          body.innerHTML = md(await fetchBody(e.path));
+          body.dataset.loaded = "1";
+        } catch (err) { body.innerHTML = "<p>could not load body</p>"; }
+      } else {
+        body.classList.remove("hidden");
+      }
+    });
+    list.appendChild(card);
+  }
+}
+
+function fillFilters() {
+  const fill = (sel, values, label) => {
+    const current = sel.value;
+    sel.innerHTML = `<option value="">${label}</option>` +
+      [...new Set(values)].sort().map(v => `<option>${v}</option>`).join("");
+    sel.value = current;
+  };
+  fill($("agentFilter"), entries.map(e => e.agent), "all agents");
+  fill($("repoFilter"), entries.map(repoName).filter(Boolean), "all repos");
+}
+
+async function load(force) {
+  $("status").textContent = "loading…";
+  try {
+    entries = await fetchIndex(force);
+    showList();
+    fillFilters();
+    render();
+    $("fetchedAt").textContent = "fetched " + new Date().toLocaleTimeString();
+  } catch (err) {
+    if (err.message === "auth") {
+      showGate("Token rejected (401/403). Enter a valid read-only token.");
+    } else {
+      // Offline / API down: fall back to cache if we have one.
+      const cached = localStorage.getItem(LS_CACHE);
+      if (cached) {
+        entries = JSON.parse(cached);
+        showList(); fillFilters(); render();
+        $("fetchedAt").textContent = "offline - showing cached copy";
+      } else {
+        $("status").textContent = "could not reach api.github.com (" + err.message + ")";
+      }
+    }
+  }
+}
+
+$("patSave").addEventListener("click", () => {
+  const value = $("patInput").value.trim();
+  if (!value) { $("gateError").textContent = "Token is empty."; return; }
+  try { localStorage.setItem(LS_PAT, value); } catch (e) {
+    $("gateError").textContent = "Storage unavailable."; return;
+  }
+  $("patInput").value = "";
+  load(true);
+});
+$("refreshBtn").addEventListener("click", () => load(false));
+$("forgetBtn").addEventListener("click", () => {
+  localStorage.removeItem(LS_PAT); showGate("Token forgotten.");
+});
+
+if (localStorage.getItem(LS_PAT)) { load(false); } else { showGate(); }
+</script>
+</body>
+</html>

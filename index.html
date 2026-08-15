@@ -3,21 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- CSP backstop: even a renderer regression cannot load foreign script or
+     exfiltrate the PAT - the only network the page may touch is api.github.com. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://api.github.com; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f7f9">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10141b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>Skopos</title>
 <style>
   :root {
     --bg: #f6f7f9; --card: #ffffff; --ink: #1a2230; --muted: #67707f;
     --line: #e3e6eb; --accent: #2563eb; --unread: #2563eb;
-    --plan: #7c3aed; --progress: #2563eb; --shipped: #059669; --review-request: #d97706;
+    --plan: #7c3aed; --progress: #2563eb; --shipped: #059669;
+    --review-request: #d97706; --handoff: #0d9488;
     --superseded: #9ca3af; --abandoned: #9ca3af;
+    --warn: #b45309; --warn-bg: #fef3c7;
+    --header-h: 64px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #10141b; --card: #1a2027; --ink: #e7ebf0; --muted: #8b95a3;
       --line: #2a323d; --accent: #60a5fa; --unread: #60a5fa;
-      --plan: #a78bfa; --progress: #60a5fa; --shipped: #34d399; --review-request: #fbbf24;
+      --plan: #a78bfa; --progress: #60a5fa; --shipped: #34d399;
+      --review-request: #fbbf24; --handoff: #2dd4bf;
+      --warn: #fbbf24; --warn-bg: #3a2f10;
     }
   }
   * { box-sizing: border-box; }
@@ -31,22 +43,33 @@
     padding: calc(10px + env(safe-area-inset-top)) 16px 8px;
     border-bottom: 1px solid var(--line);
   }
-  header h1 { margin: 0 0 6px; font-size: 20px; }
-  header h1 small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  header h1 { margin: 0 0 6px; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+  header h1 small { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .badge {
+    background: var(--unread); color: #fff; font-size: 12px; font-weight: 600;
+    border-radius: 999px; padding: 1px 8px; line-height: 1.4;
+  }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  select, button {
+  select, button, input[type="search"], input[type="text"] {
     font: inherit; font-size: 14px; color: var(--ink); background: var(--card);
     border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
   }
   button { cursor: pointer; }
-  #fetchedAt { color: var(--muted); font-size: 12px; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  #searchInput { flex: 1 1 120px; min-width: 100px; -webkit-appearance: none; }
+  #fetchedAt { color: var(--muted); font-size: 12px; flex-basis: 100%; }
+  #banner {
+    background: var(--warn-bg); color: var(--warn); font-size: 13px;
+    padding: 6px 16px; border-bottom: 1px solid var(--line);
+  }
   main { max-width: 720px; margin: 0 auto; padding: 12px 12px 40px; }
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: 12px;
     padding: 12px 14px; margin-bottom: 10px; cursor: pointer;
   }
   .card.unread { border-left: 3px solid var(--unread); }
-  .card h2 { margin: 0 0 6px; font-size: 16px; line-height: 1.35; }
+  .card.selected { border-color: var(--accent); }
+  .card h2 { margin: 0 0 6px; font-size: 16px; line-height: 1.35; overflow-wrap: anywhere; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; }
   .chip {
     padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line);
@@ -57,6 +80,8 @@
   .chip.type.progress { background: var(--progress); }
   .chip.type.shipped { background: var(--shipped); }
   .chip.type.review-request { background: var(--review-request); }
+  .chip.type.handoff { background: var(--handoff); }
+  .chip.unverified { color: var(--warn); border-color: var(--warn); font-weight: 600; }
   .card.dim { opacity: 0.55; }
   .links { margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 14px; }
   .links a { color: var(--accent); text-decoration: none; }
@@ -66,6 +91,45 @@
   }
   .body pre { overflow-x: auto; background: var(--bg); padding: 8px; border-radius: 8px; }
   .body code { background: var(--bg); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+  .body ul, .body ol { margin: 6px 0; padding-left: 22px; }
+  .body .mdh { font-weight: 600; margin: 10px 0 4px; }
+  .body .mdh1 { font-size: 15px; }
+  .body .mdh2 { font-size: 15px; }
+  .body .mdh3 { font-size: 14px; }
+  .body hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+  .unverified-note { color: var(--warn); font-size: 13px; }
+  .supnav { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 13px; }
+  .suprow { margin: 3px 0; color: var(--muted); }
+  .suprow button {
+    background: none; border: none; color: var(--accent); padding: 0;
+    font-size: 13px; text-align: left; text-decoration: underline;
+  }
+  .dayhead {
+    position: sticky; top: var(--header-h); z-index: 4;
+    background: var(--bg); color: var(--muted);
+    font-size: 13px; font-weight: 600; padding: 8px 2px 4px;
+  }
+  .divider {
+    display: flex; align-items: center; gap: 10px;
+    color: var(--unread); font-size: 12px; font-weight: 600;
+    margin: 6px 0 10px; white-space: nowrap;
+  }
+  .divider::before, .divider::after {
+    content: ""; flex: 1; border-top: 1px solid var(--unread); opacity: 0.5;
+  }
+  #handoffStrip {
+    background: var(--card); border: 1px solid var(--handoff); border-radius: 12px;
+    padding: 8px 10px; margin-bottom: 12px;
+  }
+  #handoffStrip .striplabel {
+    color: var(--handoff); font-size: 12px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
+  }
+  #handoffStrip .stripitem {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    padding: 4px 0; font-size: 14px; color: var(--ink); overflow-wrap: anywhere;
+  }
+  #handoffStrip .stripitem.unread::before { content: "\2022 "; color: var(--unread); font-weight: 700; }
   .notice { color: var(--muted); text-align: center; padding: 32px 16px; }
   /* PAT gate */
   #gate { max-width: 420px; margin: 15vh auto 0; padding: 24px; }
@@ -78,6 +142,23 @@
   }
   #gate button { width: 100%; background: var(--accent); color: #fff; border: none; padding: 10px; }
   .hidden { display: none !important; }
+  /* Two-pane reading layout on tablet-class widths (additive; phone paths untouched). */
+  #reader { display: none; }
+  @media (min-width: 760px) {
+    main {
+      max-width: 1200px; display: grid;
+      grid-template-columns: minmax(320px, 2fr) 3fr; gap: 16px; align-items: start;
+    }
+    #listCol { min-width: 0; }
+    #reader {
+      display: block; cursor: default;
+      position: sticky; top: calc(var(--header-h) + 12px);
+      max-height: calc(100vh - var(--header-h) - 24px);
+      max-height: calc(100dvh - var(--header-h) - 24px);
+      overflow-y: auto;
+    }
+    #reader.hidden { display: none !important; }
+  }
 </style>
 </head>
 <body>
@@ -92,45 +173,636 @@
     <input id="patInput" type="password" placeholder="github_pat_..." autocomplete="off">
     <button id="patSave">Save and load</button>
     <p id="gateError" style="color:#dc2626"></p>
-    <p>Tip: Add to Home Screen keeps the token (and read state) durable on iOS.</p>
+    <p>Tip: Add to Home Screen keeps the token (and read state) durable on
+    iOS. The installed app has its own storage, so enter the token once more
+    there after installing.</p>
   </div>
 </div>
 
 <header id="topbar" class="hidden">
-  <h1>Skopos <small>work in flight</small></h1>
+  <h1>Skopos <small>work in flight</small><span id="unreadBadge" class="badge hidden"></span></h1>
   <div class="toolbar">
     <select id="agentFilter"><option value="">all agents</option></select>
     <select id="repoFilter"><option value="">all repos</option></select>
+    <select id="typeFilter"><option value="">all types</option></select>
+    <input id="searchInput" type="search" placeholder="search" autocomplete="off">
+    <button id="historyBtn">history</button>
     <button id="refreshBtn">refresh</button>
     <button id="forgetBtn" title="forget token">token</button>
     <span id="fetchedAt"></span>
   </div>
 </header>
-<main><div id="list"></div><div id="status" class="notice"></div></main>
+<div id="banner" class="hidden"></div>
+<main>
+  <div id="listCol">
+    <div id="handoffStrip" class="hidden"></div>
+    <div id="list"></div>
+    <div id="status" class="notice"></div>
+  </div>
+  <aside id="reader" class="card hidden"></aside>
+</main>
 
 <script>
 "use strict";
+/* ============================== state ============================== */
 const OWNER_REPO = "brianmblakely/skopos";
-const API = `https://api.github.com/repos/${OWNER_REPO}/contents/`;
+const API_BASE = "https://api.github.com/repos/" + OWNER_REPO;
 const LS_PAT = "skopos_pat", LS_READ = "skopos_read", LS_CACHE = "skopos_index_cache",
-      LS_ETAG = "skopos_index_etag";
+      LS_COMMITS_ETAG = "skopos_commits_etag", LS_BODIES = "skopos_bodies",
+      LS_WATERMARK = "skopos_watermark";
 
-let entries = [], readIds = new Set(JSON.parse(localStorage.getItem(LS_READ) || "[]"));
+let entries = [];
+let byId = new Map();
+let supersededBy = new Map();
+let readIds = new Set(JSON.parse(localStorage.getItem(LS_READ) || "[]"));
+const expandedIds = new Set();   // session-only: bodies open inline (phone)
+const revealedIds = new Set();   // session-only: filtered-out entries forced visible
+let selectedId = null;           // reading pane target (tablet)
+let prevWatermark = null;        // epoch of the newest entry seen on the PREVIOUS visit
+const filters = { agent: "", repo: "", type: "", q: "", hist: false };
 
 const $ = (id) => document.getElementById(id);
+const wideQuery = window.matchMedia("(min-width: 760px)");
+const isWide = () => wideQuery.matches;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function headers() {
-  return {
+// One-time migration: the index ETag moved to the commits/main request.
+localStorage.removeItem("skopos_index_etag");
+
+/* ============================ escaping ============================= */
+// Escape every value interpolated into HTML - quotes included, so hostile
+// frontmatter can never break out of an attribute (spec 2.4 scenario).
+// Also strips the private-use sentinels so code-span placeholders in md()
+// cannot be forged by input.
+//
+// INVARIANT the renderer relies on: after esc(), the string contains no raw
+// "<", ">", "\"", "&" or sentinel characters. Every transform downstream of
+// esc() only ADDS fixed markup written by this file; therefore the only
+// markup in rendered output is markup the renderer itself wrote.
+function esc(value) {
+  return String(value)
+    .replace(/[]/g, "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/* ============================ markdown ============================= */
+// Minimal, hand-rolled, escape-first. Pipeline:
+//   1. esc() (see invariant above)
+//   2. lift code fences/spans into sentinel placeholders (unforgeable)
+//   3. block parse the escaped text (headings, hr, nested lists, paragraphs)
+//   4. inline pass (bold, https-only links) - never inside lifted code
+//   5. restore code placeholders
+const SENT = { open: "", close: "" };
+
+function mdInline(s) {
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  // https-anchored only: this is also the javascript:-URL defense.
+  s = s.replace(/\[([^\]\n]+)\]\((https:\/\/[^)\s]+)\)/g,
+                '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
+
+function mdBlocks(text) {
+  const out = [];
+  let para = [];
+  const listStack = []; // entries: {ordered}
+  const flushPara = () => {
+    if (para.length) { out.push("<p>" + para.join("<br>") + "</p>"); para = []; }
+  };
+  const closeLists = (depth) => {
+    while (listStack.length > depth) out.push(listStack.pop().ordered ? "</ol>" : "</ul>");
+  };
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.replace(/\s+$/, "");
+    const item = /^(\s*)([-*]|\d+\.)\s+(.*)$/.exec(line);
+    if (item) {
+      flushPara();
+      const depth = Math.min(Math.floor(item[1].length / 2), 3) + 1; // cap at 4 levels
+      const ordered = /\d/.test(item[2]);
+      closeLists(depth);
+      while (listStack.length < depth) {
+        listStack.push({ ordered });
+        out.push(ordered ? "<ol>" : "<ul>");
+      }
+      if (listStack[depth - 1].ordered !== ordered) {
+        out.push(listStack.pop().ordered ? "</ol>" : "</ul>");
+        listStack.push({ ordered });
+        out.push(ordered ? "<ol>" : "<ul>");
+      }
+      out.push("<li>" + mdInline(item[3]) + "</li>");
+      continue;
+    }
+    closeLists(0);
+    const t = line.trim();
+    if (t === "") { flushPara(); continue; }
+    if (new RegExp("^" + SENT.open + "\\d+" + SENT.close + "$").test(t)) {
+      flushPara(); out.push(t); continue; // lifted fence: emit as its own block
+    }
+    const h = /^(#{1,3})\s+(.*)$/.exec(t);
+    if (h) {
+      flushPara();
+      out.push('<div class="mdh mdh' + h[1].length + '">' + mdInline(h[2]) + "</div>");
+      continue;
+    }
+    if (/^(-{3,}|\*{3,})$/.test(t)) { flushPara(); out.push("<hr>"); continue; }
+    para.push(mdInline(line));
+  }
+  closeLists(0);
+  flushPara();
+  return out.join("");
+}
+
+function md(text) {
+  let safe = esc(text); // FIRST - see invariant on esc()
+  const stash = [];
+  safe = safe.replace(/```([\s\S]*?)```/g, (_, code) => {
+    stash.push("<pre>" + code.replace(/^\n+|\n+$/g, "") + "</pre>");
+    return SENT.open + (stash.length - 1) + SENT.close;
+  });
+  safe = safe.replace(/`([^`\n]+)`/g, (_, code) => {
+    stash.push("<code>" + code + "</code>");
+    return SENT.open + (stash.length - 1) + SENT.close;
+  });
+  let html = mdBlocks(safe);
+  html = html.replace(new RegExp(SENT.open + "(\\d+)" + SENT.close, "g"),
+                      (_, i) => stash[Number(i)]);
+  return html;
+}
+
+/* =========================== data layer ============================ */
+function headers(extra) {
+  const h = {
     "Authorization": "Bearer " + localStorage.getItem(LS_PAT),
     "Accept": "application/vnd.github.raw+json",
     "X-GitHub-Api-Version": "2022-11-28",
   };
+  return Object.assign(h, extra || {});
 }
 
+function contentsUrl(path, ref) {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  return API_BASE + "/contents/" + encoded + "?ref=" + encodeURIComponent(ref);
+}
+
+function apiError(kind, detail) {
+  const err = new Error(kind);
+  err.kind = kind;
+  err.detail = detail;
+  return err;
+}
+
+function classify(res) {
+  if (res.status === 401) return apiError("auth", "Token rejected (401). Enter a valid read-only token.");
+  if ((res.status === 403 || res.status === 429) &&
+      res.headers.get("x-ratelimit-remaining") === "0") {
+    const reset = Number(res.headers.get("x-ratelimit-reset") || 0) * 1000;
+    return apiError("ratelimit", reset);
+  }
+  if (res.status === 403) return apiError("auth", "Token forbidden (403). Enter a valid read-only token.");
+  if (res.status === 404) return apiError("scope", "Token lacks access to " + OWNER_REPO + " (check the token's repo scope).");
+  return apiError("http", "HTTP " + res.status);
+}
+
+// Transient failures (network, 5xx) retry twice with backoff; 4xx never retries.
+async function fetchWithRetry(url, opts) {
+  const delays = [500, 1500];
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(url, opts);
+    } catch (err) {
+      if (attempt < delays.length) { await sleep(delays[attempt] + Math.random() * 250); continue; }
+      throw apiError("network", String(err));
+    }
+    if (res.status >= 500 && attempt < delays.length) {
+      await sleep(delays[attempt] + Math.random() * 250);
+      continue;
+    }
+    return res;
+  }
+}
+
+async function sha256hex12(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+}
+
+// Coherent-pair index load per the store CONTRACT.md:
+// resolve HEAD once (conditionally - a 304 is the cheap no-change path),
+// fetch index.json + index.meta.json pinned to that sha, verify the
+// projection hash, retry the pair exactly once on a torn write, then fail
+// open to the cached copy.
+async function loadIndex(force) {
+  const commitOpts = { headers: headers() };
+  const storedTag = localStorage.getItem(LS_COMMITS_ETAG);
+  if (storedTag && !force) commitOpts.headers["If-None-Match"] = storedTag;
+  const head = await fetchWithRetry(API_BASE + "/commits/main", commitOpts);
+  if (head.status === 304) {
+    const cached = localStorage.getItem(LS_CACHE);
+    if (cached) return { entries: JSON.parse(cached), unchanged: true };
+    localStorage.removeItem(LS_COMMITS_ETAG); // cache lost: do a real fetch
+    return loadIndex(true);
+  }
+  if (!head.ok) throw classify(head);
+  let sha = (await head.json()).sha;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const [idxRes, metaRes] = await Promise.all([
+      fetchWithRetry(contentsUrl("index.json", sha), { headers: headers() }),
+      fetchWithRetry(contentsUrl("index.meta.json", sha), { headers: headers() }),
+    ]);
+    if (!idxRes.ok) throw classify(idxRes);
+    const bytes = new Uint8Array(await idxRes.arrayBuffer());
+    let meta = null;
+    if (metaRes.ok) {
+      try { meta = JSON.parse(await metaRes.text()); } catch (e) { meta = null; }
+    } // 404 (or unparseable) meta = pre-contract store: treat as v1
+    const text = new TextDecoder().decode(bytes);
+    let parsed;
+    try { parsed = JSON.parse(text); } catch (e) {
+      throw apiError("schema", "index.json did not parse");
+    }
+    if (!Array.isArray(parsed)) {
+      // v2+ wraps the array in an object - this viewer speaks v1 only.
+      throw apiError("schema", "store schema is newer than this viewer");
+    }
+    if (meta && typeof meta.projection === "string") {
+      const hash = await sha256hex12(bytes);
+      if ("sha256:" + hash !== meta.projection) {
+        if (attempt === 0) {
+          const again = await fetchWithRetry(API_BASE + "/commits/main", { headers: headers() });
+          if (again.ok) sha = (await again.json()).sha;
+          continue; // torn pair: one re-resolve + refetch, per contract
+        }
+        throw apiError("torn", "store temporarily inconsistent");
+      }
+    }
+    try {
+      localStorage.setItem(LS_CACHE, text);
+      const newTag = head.headers.get("ETag");
+      if (newTag) localStorage.setItem(LS_COMMITS_ETAG, newTag);
+    } catch (e) { /* storage full - live without cache */ }
+    return { entries: parsed, unchanged: false };
+  }
+}
+
+/* --------------------------- body cache --------------------------- */
+// Increments are append-only and immutable, so a body fetched once is
+// valid forever - cache by id, LRU-capped, so prior reads work offline.
+const BODY_CACHE_MAX = 1000000; // ~1MB serialized
+
+function readBodyCache() {
+  try { return JSON.parse(localStorage.getItem(LS_BODIES) || "{}"); }
+  catch (e) { return {}; }
+}
+
+function writeBodyCache(cache) {
+  let s = JSON.stringify(cache);
+  while (s.length > BODY_CACHE_MAX) {
+    let oldestId = null, oldestT = Infinity;
+    for (const [id, rec] of Object.entries(cache)) {
+      if (rec.t < oldestT) { oldestT = rec.t; oldestId = id; }
+    }
+    if (oldestId === null) break;
+    delete cache[oldestId];
+    s = JSON.stringify(cache);
+  }
+  try { localStorage.setItem(LS_BODIES, s); }
+  catch (e) {
+    try { localStorage.removeItem(LS_BODIES); } catch (e2) { /* give up */ }
+  }
+}
+
+async function fetchBody(entry) {
+  const cache = readBodyCache();
+  if (cache[entry.id]) {
+    cache[entry.id].t = Date.now();
+    writeBodyCache(cache);
+    return cache[entry.id].md;
+  }
+  const res = await fetchWithRetry(contentsUrl(entry.path, "main"), { headers: headers() });
+  if (!res.ok) throw classify(res);
+  const raw = await res.text();
+  const body = raw.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+  cache[entry.id] = { t: Date.now(), md: body };
+  writeBodyCache(cache);
+  return body;
+}
+
+/* ========================== read state ============================ */
+function persistRead() {
+  try { localStorage.setItem(LS_READ, JSON.stringify([...readIds])); } catch (e) {}
+}
+
+function markRead(id) {
+  if (readIds.has(id)) return;
+  readIds.add(id);
+  persistRead();
+  updateBadge();
+  renderStrip();
+}
+
+function noteWatermark() {
+  const maxEpoch = entries.reduce(
+    (m, e) => Math.max(m, Date.parse(e.created) || 0), 0);
+  const stored = Number(localStorage.getItem(LS_WATERMARK) || 0);
+  if (prevWatermark === null) prevWatermark = stored; // session-stable divider
+  if (maxEpoch > stored) {
+    try { localStorage.setItem(LS_WATERMARK, String(maxEpoch)); } catch (e) {}
+  }
+}
+
+/* ====================== filtering + rendering ====================== */
+function repoName(entry) {
+  const url = entry.repo || entry.issue || entry.pr || entry.commit || "";
+  const m = url.match(/github\.com\/([^/]+\/[^/]+)/);
+  return m ? m[1] : "";
+}
+
+function matchesFacets(e) {
+  if (filters.agent && e.agent !== filters.agent) return false;
+  if (filters.repo && repoName(e) !== filters.repo) return false;
+  if (filters.type && e.type !== filters.type) return false;
+  if (filters.q) {
+    const hay = (e.title + " " + e.id + " " + (e.tags || []).join(" ")).toLowerCase();
+    if (!hay.includes(filters.q.toLowerCase())) return false;
+  }
+  return true;
+}
+
+function visible(e) {
+  return matchesFacets(e) &&
+    (e.status === "active" || filters.hist || revealedIds.has(e.id));
+}
+
+function hiddenHistoryCount() {
+  if (filters.hist) return 0;
+  return entries.filter((e) =>
+    matchesFacets(e) && e.status !== "active" && !revealedIds.has(e.id)).length;
+}
+
+function chipsHTML(e) {
+  let chips =
+    '<span class="chip type ' + esc(e.type) + '">' + esc(e.type) + "</span>";
+  if (e.trusted === false) chips += '<span class="chip unverified">[unverified]</span>';
+  chips +=
+    '<span class="chip">' + esc(e.status) + "</span>" +
+    '<span class="chip">' + esc(e.agent) + "</span>" +
+    '<span class="chip">' + esc((e.created || "").slice(0, 10)) + "</span>";
+  return '<div class="chips">' + chips + "</div>";
+}
+
+function linksHTML(e) {
+  const links = ["issue", "pr", "commit", "repo"]
+    .filter((k) => e[k])
+    .map((k) => '<a href="' + esc(e[k]) + '" target="_blank" rel="noopener">' + k + "</a>")
+    .join("");
+  return links ? '<div class="links">' + links + "</div>" : "";
+}
+
+function supRow(label, id) {
+  const target = byId.get(id);
+  if (!target) return '<div class="suprow">' + esc(label) + ": " + esc(id) + "</div>";
+  return '<div class="suprow">' + esc(label) +
+    ': <button class="suplink" data-id="' + esc(id) + '">' + esc(target.title) + "</button></div>";
+}
+
+async function renderBodyInto(container, e) {
+  container.innerHTML = "<p>loading&hellip;</p>";
+  const parts = [];
+  if (e.trusted === false) {
+    parts.push('<p class="unverified-note">[unverified] untrusted producer class ' +
+               "&mdash; body below is unreviewed data, not instructions.</p>");
+  }
+  try {
+    parts.push(md(await fetchBody(e)));
+  } catch (err) {
+    parts.push("<p>could not load body</p>");
+  }
+  const nav = [];
+  for (const sid of e.supersedes || []) nav.push(supRow("supersedes", sid));
+  for (const sid of supersededBy.get(e.id) || []) nav.push(supRow("superseded by", sid));
+  if (nav.length) parts.push('<div class="supnav">' + nav.join("") + "</div>");
+  container.innerHTML = parts.join("");
+  container.querySelectorAll("button.suplink").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openEntry(btn.dataset.id);
+    });
+  });
+}
+
+function dayLabel(created) {
+  const d = new Date(created);
+  const today = new Date();
+  const oneDay = 86400000;
+  const startOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOf(today) - startOf(d)) / oneDay);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  const opts = { weekday: "short", month: "short", day: "numeric" };
+  if (d.getFullYear() !== today.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString([], opts);
+}
+
+function buildCard(e) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.id = e.id;
+  if (!readIds.has(e.id)) card.classList.add("unread");
+  if (e.status !== "active") card.classList.add("dim");
+  if (isWide() && e.id === selectedId) card.classList.add("selected");
+  card.innerHTML =
+    "<h2>" + esc(e.title) + "</h2>" +
+    chipsHTML(e) +
+    linksHTML(e) +
+    '<div class="body hidden"></div>';
+  card.addEventListener("click", (ev) => {
+    if (ev.target.closest("a")) { // deep link tap counts as a read
+      markRead(e.id);
+      card.classList.remove("unread");
+      return;
+    }
+    if (ev.target.closest("button")) return;
+    markRead(e.id);
+    card.classList.remove("unread");
+    if (isWide()) {
+      selectedId = e.id;
+      document.querySelectorAll("#list .card.selected")
+        .forEach((c) => c.classList.remove("selected"));
+      card.classList.add("selected");
+      renderReader();
+      return;
+    }
+    const body = card.querySelector(".body");
+    if (expandedIds.has(e.id)) {
+      expandedIds.delete(e.id);
+      body.classList.add("hidden");
+      return;
+    }
+    expandedIds.add(e.id);
+    body.classList.remove("hidden");
+    if (!body.dataset.loaded) {
+      renderBodyInto(body, e).then(() => { body.dataset.loaded = "1"; });
+    }
+  });
+  return card;
+}
+
+function render() {
+  const list = $("list");
+  list.innerHTML = "";
+  const shown = entries.filter(visible);
+  $("status").textContent = shown.length ? "" : "no increments match";
+
+  let lastDay = null;
+  let dividerPlaced = false;
+  const anyNew = prevWatermark > 0 &&
+    shown.some((e) => (Date.parse(e.created) || 0) > prevWatermark);
+  for (const e of shown) {
+    const epoch = Date.parse(e.created) || 0;
+    if (anyNew && !dividerPlaced && epoch <= prevWatermark) {
+      const div = document.createElement("div");
+      div.className = "divider";
+      div.textContent = "new since " + new Date(prevWatermark).toLocaleString(
+        [], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      list.appendChild(div);
+      dividerPlaced = true;
+    }
+    const day = dayLabel(e.created);
+    if (day !== lastDay) {
+      const head = document.createElement("div");
+      head.className = "dayhead";
+      head.textContent = day;
+      list.appendChild(head);
+      lastDay = day;
+    }
+    list.appendChild(buildCard(e));
+  }
+  updateBadge();
+  updateHistoryBtn();
+  renderStrip();
+  renderReader();
+}
+
+function updateBadge() {
+  const count = entries.filter((e) => visible(e) && !readIds.has(e.id)).length;
+  const badge = $("unreadBadge");
+  badge.textContent = String(count);
+  badge.classList.toggle("hidden", count === 0);
+  // Cheap unread-border sync for cards already in the DOM.
+  document.querySelectorAll("#list .card").forEach((c) => {
+    if (readIds.has(c.dataset.id)) c.classList.remove("unread");
+  });
+}
+
+function updateHistoryBtn() {
+  const btn = $("historyBtn");
+  const hidden = hiddenHistoryCount();
+  btn.textContent = filters.hist ? "history on" : (hidden ? "history (+" + hidden + ")" : "history");
+  btn.classList.toggle("on", filters.hist);
+}
+
+function renderStrip() {
+  const strip = $("handoffStrip");
+  const handoffs = entries.filter((e) => e.type === "handoff" && e.status === "active");
+  if (!handoffs.length) { strip.innerHTML = ""; strip.classList.add("hidden"); return; }
+  strip.classList.remove("hidden");
+  strip.innerHTML = '<div class="striplabel">Inbound handoffs</div>' +
+    handoffs.map((e) =>
+      '<button class="stripitem' + (readIds.has(e.id) ? "" : " unread") +
+      '" data-id="' + esc(e.id) + '">' + esc(e.title) + "</button>").join("");
+  strip.querySelectorAll(".stripitem").forEach((b) => {
+    b.addEventListener("click", () => openEntry(b.dataset.id));
+  });
+}
+
+function renderReader() {
+  const reader = $("reader");
+  if (!isWide() || !selectedId || !byId.has(selectedId)) {
+    reader.classList.add("hidden");
+    return;
+  }
+  const e = byId.get(selectedId);
+  reader.classList.remove("hidden");
+  reader.innerHTML =
+    "<h2>" + esc(e.title) + "</h2>" + chipsHTML(e) + linksHTML(e) +
+    '<div class="body"></div>';
+  reader.querySelectorAll(".links a").forEach((a) => {
+    a.addEventListener("click", () => markRead(e.id));
+  });
+  renderBodyInto(reader.querySelector(".body"), e);
+}
+
+function openEntry(id) {
+  const e = byId.get(id);
+  if (!e) return;
+  revealedIds.add(id);
+  markRead(id);
+  if (isWide()) {
+    selectedId = id;
+    render();
+  } else {
+    expandedIds.add(id);
+    render();
+    const card = document.querySelector('#list .card[data-id="' + CSS.escape(id) + '"]');
+    if (card) {
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+      const body = card.querySelector(".body");
+      body.classList.remove("hidden");
+      if (!body.dataset.loaded) {
+        renderBodyInto(body, e).then(() => { body.dataset.loaded = "1"; });
+      }
+    }
+  }
+}
+
+function fillFilters() {
+  const fill = (sel, values, label) => {
+    const current = sel.value;
+    sel.innerHTML = '<option value="">' + label + "</option>" +
+      [...new Set(values)].sort().map((v) => "<option>" + esc(v) + "</option>").join("");
+    sel.value = current;
+  };
+  fill($("agentFilter"), entries.map((e) => e.agent), "all agents");
+  fill($("repoFilter"), entries.map(repoName).filter(Boolean), "all repos");
+  fill($("typeFilter"), entries.map((e) => e.type), "all types");
+}
+
+/* ========================= hash view-state ========================= */
+// agent/repo/type/history live in the hash (shareable, survives standalone
+// relaunch); free-text search is deliberately session-only.
+function writeHash() {
+  const params = new URLSearchParams();
+  if (filters.agent) params.set("agent", filters.agent);
+  if (filters.repo) params.set("repo", filters.repo);
+  if (filters.type) params.set("type", filters.type);
+  if (filters.hist) params.set("hist", "1");
+  const s = params.toString();
+  history.replaceState(null, "", s ? "#" + s : location.pathname + location.search);
+}
+
+function readHash() {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  filters.agent = params.get("agent") || "";
+  filters.repo = params.get("repo") || "";
+  filters.type = params.get("type") || "";
+  filters.hist = params.get("hist") === "1";
+  $("agentFilter").value = filters.agent;
+  $("repoFilter").value = filters.repo;
+  $("typeFilter").value = filters.type;
+}
+
+/* ========================= gate + banners ========================== */
 function showGate(message) {
   $("gate").classList.remove("hidden");
   $("topbar").classList.add("hidden");
+  $("banner").classList.add("hidden");
   $("list").innerHTML = "";
+  $("handoffStrip").classList.add("hidden");
+  $("reader").classList.add("hidden");
   $("status").textContent = "";
   $("gateError").textContent = message || "";
 }
@@ -140,146 +812,77 @@ function showList() {
   $("topbar").classList.remove("hidden");
 }
 
-async function fetchIndex(force) {
-  const opts = { headers: headers() };
-  const etag = localStorage.getItem(LS_ETAG);
-  if (etag && !force) opts.headers["If-None-Match"] = etag;
-  const res = await fetch(API + "index.json?ref=main", opts);
-  if (res.status === 304) return JSON.parse(localStorage.getItem(LS_CACHE) || "[]");
-  if (res.status === 401 || res.status === 403) throw new Error("auth");
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const text = await res.text();
-  const tag = res.headers.get("ETag");
-  try {
-    localStorage.setItem(LS_CACHE, text);
-    if (tag) localStorage.setItem(LS_ETAG, tag);
-  } catch (e) { /* storage full - live without cache */ }
-  return JSON.parse(text);
+function showBanner(text) {
+  $("banner").textContent = text;
+  $("banner").classList.remove("hidden");
 }
 
-async function fetchBody(path) {
-  const res = await fetch(API + path.split("/").map(encodeURIComponent).join("/") + "?ref=main",
-                          { headers: headers() });
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const raw = await res.text();
-  return raw.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+function clearBanner() {
+  $("banner").classList.add("hidden");
 }
 
-// Escape every value interpolated into HTML - quotes included, so hostile
-// frontmatter can never break out of an attribute (spec 2.4 scenario).
-function esc(value) {
-  return String(value)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-// Minimal markdown: escape, then headings / bold / code / links / paragraphs.
-function md(text) {
-  let safe = esc(text);
-  safe = safe.replace(/```([\s\S]*?)```/g, (_, c) => `<pre>${c}</pre>`);
-  safe = safe.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  safe = safe.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-  safe = safe.replace(/\[([^\]\n]+)\]\((https:\/\/[^)\s]+)\)/g,
-                      '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  safe = safe.replace(/^### (.*)$/gm, "<strong>$1</strong>");
-  safe = safe.replace(/^## (.*)$/gm, "<strong>$1</strong>");
-  safe = safe.replace(/^- (.*)$/gm, "&bull; $1");
-  return safe.split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
-}
-
-function markRead(id) {
-  readIds.add(id);
-  try { localStorage.setItem(LS_READ, JSON.stringify([...readIds])); } catch (e) {}
-}
-
-function repoName(entry) {
-  const url = entry.repo || entry.issue || entry.pr || entry.commit || "";
-  const m = url.match(/github\.com\/([^/]+\/[^/]+)/);
-  return m ? m[1] : "";
-}
-
-function render() {
-  const agent = $("agentFilter").value, repo = $("repoFilter").value;
-  const list = $("list");
-  list.innerHTML = "";
-  const shown = entries.filter(e =>
-    (!agent || e.agent === agent) && (!repo || repoName(e) === repo));
-  $("status").textContent = shown.length ? "" : "no increments match";
-  for (const e of shown) {
-    const card = document.createElement("div");
-    card.className = "card";
-    if (!readIds.has(e.id)) card.classList.add("unread");
-    if (e.status !== "active") card.classList.add("dim");
-    const links = ["issue", "pr", "commit", "repo"]
-      .filter(k => e[k])
-      .map(k => `<a href="${esc(e[k])}" target="_blank" rel="noopener">${k}</a>`)
-      .join("");
-    card.innerHTML =
-      `<h2>${esc(e.title)}</h2>
-       <div class="chips">
-         <span class="chip type ${esc(e.type)}">${esc(e.type)}</span>
-         <span class="chip">${esc(e.status)}</span>
-         <span class="chip">${esc(e.agent)}</span>
-         <span class="chip">${esc((e.created || "").slice(0, 10))}</span>
-       </div>
-       <div class="links">${links}</div>
-       <div class="body hidden"></div>`;
-    card.addEventListener("click", async (ev) => {
-      if (ev.target.tagName === "A") { markRead(e.id); card.classList.remove("unread"); return; }
-      const body = card.querySelector(".body");
-      markRead(e.id); card.classList.remove("unread");
-      if (!body.classList.contains("hidden")) { body.classList.add("hidden"); return; }
-      if (!body.dataset.loaded) {
-        body.innerHTML = "<p>loading&hellip;</p>";
-        body.classList.remove("hidden");
-        try {
-          body.innerHTML = md(await fetchBody(e.path));
-          body.dataset.loaded = "1";
-        } catch (err) { body.innerHTML = "<p>could not load body</p>"; }
-      } else {
-        body.classList.remove("hidden");
-      }
-    });
-    list.appendChild(card);
+/* ============================== load =============================== */
+function indexEntries(list) {
+  entries = list;
+  byId = new Map(entries.map((e) => [e.id, e]));
+  supersededBy = new Map();
+  for (const e of entries) {
+    for (const sid of e.supersedes || []) {
+      if (!supersededBy.has(sid)) supersededBy.set(sid, []);
+      supersededBy.get(sid).push(e.id);
+    }
   }
-}
-
-function fillFilters() {
-  const fill = (sel, values, label) => {
-    const current = sel.value;
-    sel.innerHTML = `<option value="">${label}</option>` +
-      [...new Set(values)].sort().map(v => `<option>${esc(v)}</option>`).join("");
-    sel.value = current;
-  };
-  fill($("agentFilter"), entries.map(e => e.agent), "all agents");
-  fill($("repoFilter"), entries.map(repoName).filter(Boolean), "all repos");
 }
 
 async function load(force) {
   $("status").textContent = "loading…";
   try {
-    entries = await fetchIndex(force);
+    const result = await loadIndex(force);
+    clearBanner();
+    indexEntries(result.entries);
+    noteWatermark();
     showList();
     fillFilters();
+    readHash();
     render();
-    $("fetchedAt").textContent = "fetched " + new Date().toLocaleTimeString();
+    $("fetchedAt").textContent = result.unchanged
+      ? "up to date - " + new Date().toLocaleTimeString()
+      : "fetched " + new Date().toLocaleTimeString();
   } catch (err) {
-    if (err.message === "auth") {
-      showGate("Token rejected (401/403). Enter a valid read-only token.");
-    } else {
-      // Offline / API down: fall back to cache if we have one.
-      const cached = localStorage.getItem(LS_CACHE);
-      if (cached) {
-        entries = JSON.parse(cached);
-        showList(); fillFilters(); render();
-        $("fetchedAt").textContent = "offline - showing cached copy";
+    const kind = err.kind || "http";
+    if (kind === "auth" || kind === "scope") { showGate(err.detail); return; }
+    const cached = localStorage.getItem(LS_CACHE);
+    if (cached) {
+      indexEntries(JSON.parse(cached));
+      noteWatermark();
+      showList();
+      fillFilters();
+      readHash();
+      render();
+      if (kind === "ratelimit") {
+        const until = err.detail
+          ? " until " + new Date(err.detail).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+          : "";
+        showBanner("rate limited" + until + " - showing cached copy");
+      } else if (kind === "schema") {
+        showBanner(err.detail + " - showing cached copy");
+      } else if (kind === "torn") {
+        showBanner("store temporarily inconsistent - showing cached copy");
       } else {
-        $("status").textContent = "could not reach api.github.com (" + err.message + ")";
+        showBanner("offline - showing cached copy");
       }
+      $("fetchedAt").textContent = "";
+    } else {
+      showList();
+      $("status").textContent =
+        kind === "ratelimit" ? "rate limited by api.github.com - try again shortly"
+        : kind === "schema" ? err.detail
+        : "could not reach api.github.com (" + (err.detail || err.message) + ")";
     }
   }
 }
 
+/* ============================= events ============================== */
 $("patSave").addEventListener("click", () => {
   const value = $("patInput").value.trim();
   if (!value) { $("gateError").textContent = "Token is empty."; return; }
@@ -291,10 +894,51 @@ $("patSave").addEventListener("click", () => {
 });
 $("refreshBtn").addEventListener("click", () => load(false));
 $("forgetBtn").addEventListener("click", () => {
-  localStorage.removeItem(LS_PAT); showGate("Token forgotten.");
+  localStorage.removeItem(LS_PAT);
+  showGate("Token forgotten.");
 });
+$("historyBtn").addEventListener("click", () => {
+  filters.hist = !filters.hist;
+  writeHash();
+  render();
+});
+for (const id of ["agentFilter", "repoFilter", "typeFilter"]) {
+  $(id).addEventListener("change", () => {
+    filters.agent = $("agentFilter").value;
+    filters.repo = $("repoFilter").value;
+    filters.type = $("typeFilter").value;
+    writeHash();
+    render();
+  });
+}
+let searchTimer = null;
+$("searchInput").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    filters.q = $("searchInput").value.trim();
+    render();
+  }, 150);
+});
+window.addEventListener("hashchange", () => { readHash(); render(); });
+wideQuery.addEventListener("change", () => render());
 
+// Sticky day headers sit below the (wrapping, variable-height) toolbar.
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty(
+    "--header-h", $("topbar").offsetHeight + "px");
+}).observe($("topbar"));
+
+/* =============================== pwa =============================== */
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(() => { /* non-fatal */ });
+}
+if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().catch(() => {});
+}
+
+/* ============================== init =============================== */
 if (localStorage.getItem(LS_PAT)) { load(false); } else { showGate(); }
 </script>
 </body>
 </html>
+

@@ -104,6 +104,17 @@
     background: none; border: none; color: var(--accent); padding: 0;
     font-size: 13px; text-align: left; text-decoration: underline;
   }
+  /* Deliberately NOT the .suprow link treatment: share ACTS, supersedes
+     NAVIGATES, and at 13px underlined blue the two were indistinguishable.
+     Padding takes the hit area to >=44px tall for iOS touch guidance. */
+  .sharerow { margin-top: 12px; }
+  .sharerow button {
+    background: var(--card); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 8px;
+    padding: 10px 16px; font-size: 14px; min-height: 44px;
+    text-decoration: none;
+  }
+  .sharerow button.failed { border-color: var(--warn); color: var(--warn); }
   .dayhead {
     position: sticky; top: var(--header-h); z-index: 4;
     background: var(--bg); color: var(--muted);
@@ -562,6 +573,88 @@ function linksHTML(e) {
   return links ? '<div class="links">' + links + "</div>" : "";
 }
 
+// Plain-text share payload. Deliberately NOT built from chipsHTML/linksHTML:
+// those return esc()-ed HTML, which would put &amp; in the operator's clipboard.
+// The recipient can open neither the private store nor this PAT-gated viewer,
+// so the text has to stand alone - links are a strippable tail, not the payload.
+const SHARE_BODY_MAX = 600;
+
+// esc() protects THIS page's DOM and is the wrong tool for text leaving the
+// app, where entities would be noise. Increment bodies are untrusted input, so
+// executable markup is stripped before it travels - the store's own Telegram
+// producer sanitizes body lines for the same reason.
+//
+// Scoped to tags that can EXECUTE or FETCH, not to angle brackets generally.
+// A blanket /<[^>]*>/ ate ordinary prose: "if x < 5 and y > 3" shared as
+// "if x  3", and `Promise<string>` lost its type parameter. Increments are
+// engineering writing - comparisons, generics and redirects are routine, and
+// silently deleting them corrupts the message the operator is sending. A bare
+// <div> or <string> is inert text in a chat client; a <script> or <img> is not.
+const SHARE_UNSAFE_TAGS =
+  /<\/?\s*(script|iframe|img|svg|object|embed|link|style|meta|base|form|input|button|video|audio|source|template)\b[^>]*>/gi;
+// Any tag carrying an inline event handler, whatever its name.
+const SHARE_HANDLER_TAGS = /<[^>]*\son[a-z]+\s*=[^>]*>/gi;
+
+function shareSanitize(value) {
+  return String(value == null ? "" : value)
+    .replace(SHARE_UNSAFE_TAGS, "")
+    .replace(SHARE_HANDLER_TAGS, "")
+    .replace(/javascript:/gi, "")
+    .trim();
+}
+
+function shareExcerpt(bodyMd) {
+  const para = shareSanitize(String(bodyMd || "").trim().split(/\n\s*\n/)[0] || "");
+  if (para.length <= SHARE_BODY_MAX) return para;
+  const cut = para.slice(0, SHARE_BODY_MAX);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > 0 ? cut.slice(0, sp) : cut) + "…";
+}
+
+// YAML double-quoted scalar. Titles carry colons, quotes and brackets; an
+// unescaped one would break the frontmatter block and the note would ingest
+// as untyped prose.
+function shareYaml(value) {
+  return '"' + shareSanitize(value).replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"').replace(/[\r\n]+/g, " ") + '"';
+}
+
+// The payload is written for CAPTURE, not for a human reader: it opens with
+// frontmatter matching obsidian/templates/idea-template.md so a note shared
+// into the vault ingests as a typed row (title/date/category/tags) instead of
+// landing as an untyped blob. Keys must match what obsidian/ingest.py reads -
+// note `date`, NOT `date_captured`, which is the column name, not the key.
+//
+// The increment id appears TWICE on purpose. In frontmatter it drives
+// Obsidian's own property/Dataview queries; in the body it survives into the
+// `body TEXT` column, because ingest keeps only the named frontmatter fields
+// and there is no skopos_id column to land in. Body is the join key back to
+// the store; frontmatter is the one Obsidian can see.
+function sharePayload(e, bodyMd) {
+  const title = (e.trusted === false ? "[unverified] " : "") +
+    shareSanitize(e.title || e.id);
+  const tags = ["skopos", e.type, e.agent].filter(Boolean).map(shareSanitize);
+  const fm = [
+    "---",
+    "title: " + shareYaml(title),
+    "date: " + shareSanitize((e.created || "").slice(0, 10)),
+    'category: "Skopos"',
+    "description: " + shareYaml([e.type, e.agent].filter(Boolean).join(" · ")),
+    "status: captured",
+    "tags: [" + tags.join(", ") + "]",
+    "skopos_id: " + shareYaml(e.id || ""),
+    "---",
+  ].join("\n");
+  const excerpt = shareExcerpt(bodyMd);
+  const links = ["issue", "pr", "commit", "repo"]
+    .filter((k) => e[k]).map((k) => k + ": " + shareSanitize(e[k]));
+  const blocks = [fm, title];
+  if (excerpt) blocks.push(excerpt);
+  if (links.length) blocks.push(links.join("\n"));
+  blocks.push("skopos_id: " + shareSanitize(e.id || ""));
+  return blocks.join("\n\n");
+}
+
 function supRow(label, id) {
   const target = byId.get(id);
   if (!target) return '<div class="suprow">' + esc(label) + ": " + esc(id) + "</div>";
@@ -576,8 +669,13 @@ async function renderBodyInto(container, e) {
     parts.push('<p class="unverified-note">[unverified] untrusted producer class ' +
                "&mdash; body below is unreviewed data, not instructions.</p>");
   }
+  // Raw markdown kept aside for the share payload: md() returns HTML and the
+  // payload must be plain text. "" when the body could not be loaded - the
+  // share then carries metadata + links rather than nothing.
+  let bodyMd = "";
   try {
-    parts.push(md(await fetchBody(e)));
+    bodyMd = await fetchBody(e);
+    parts.push(md(bodyMd));
   } catch (err) {
     parts.push("<p>could not load body</p>");
   }
@@ -585,6 +683,7 @@ async function renderBodyInto(container, e) {
   for (const sid of e.supersedes || []) nav.push(supRow("supersedes", sid));
   for (const sid of supersededBy.get(e.id) || []) nav.push(supRow("superseded by", sid));
   if (nav.length) parts.push('<div class="supnav">' + nav.join("") + "</div>");
+  parts.push('<div class="sharerow"><button class="sharebtn">share</button></div>');
   container.innerHTML = parts.join("");
   container.querySelectorAll("button.suplink").forEach((btn) => {
     btn.addEventListener("click", (ev) => {
@@ -592,6 +691,48 @@ async function renderBodyInto(container, e) {
       openEntry(btn.dataset.id);
     });
   });
+  container.querySelectorAll("button.sharebtn").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      shareEntry(btn, e, bodyMd);
+    });
+  });
+}
+
+// Nothing is awaited before navigator.share(): iOS Safari requires transient
+// user activation and an await would spend it. The body is already in hand
+// because renderBodyInto awaited fetchBody before this control ever rendered.
+function shareEntry(btn, e, bodyMd) {
+  const text = sharePayload(e, bodyMd);
+  // Every terminal state says something. A control that looks like it worked
+  // while delivering nothing is the specific failure TC-4 forbids, and it is
+  // reachable: navigator.clipboard is undefined outside a secure context, and
+  // writeText rejects when the permission is denied.
+  const flash = (label, ok) => {
+    btn.textContent = label;
+    btn.classList.toggle("on", ok);
+    btn.classList.toggle("failed", !ok);
+    sleep(1200).then(() => {
+      btn.textContent = "share";
+      btn.classList.remove("on", "failed");
+    });
+  };
+  const confirm = () => flash("copied", true);
+  const fail = () => flash("copy failed", false);
+  const toClipboard = () => {
+    if (!navigator.clipboard) { fail(); return; }
+    navigator.clipboard.writeText(text).then(confirm, fail);
+  };
+  if (navigator.share) {
+    // A dismissed sheet rejects with AbortError. That is the operator changing
+    // their mind, not a failure - swallow it and leave the reading state alone.
+    navigator.share({ text }).catch((err) => {
+      if (err && err.name === "AbortError") return;
+      toClipboard();
+    });
+    return;
+  }
+  toClipboard();
 }
 
 function dayLabel(created) {

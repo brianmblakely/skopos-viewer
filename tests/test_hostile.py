@@ -65,3 +65,32 @@ def test_hostile_link_urls_stay_inside_attributes(viewer):
     assert href.startswith("https://github.com/x/y/issues/1")
     assert issue_link.get_attribute("onclick") is None
 
+
+
+def test_hostile_body_shares_as_inert_text_and_exfiltrates_nothing(
+        wire_api, app_server, external_requests):
+    """TC-5: the share path is a second consumer of untrusted body content."""
+    page = wire_api
+    page.add_init_script("localStorage.setItem('skopos_pat', 'test-token')")
+    page.add_init_script(
+        "window.__shared = [];"
+        "navigator.share = (d) => { window.__shared.push(d); return Promise.resolve(); };"
+    )
+    page.goto(app_server + "/index.html")
+    page.wait_for_selector("#list .card")
+    card, _body = _expand_hostile_card(page)
+    btn = card.locator("button.sharebtn")
+    btn.wait_for()
+    btn.click()
+    page.wait_for_function("() => window.__shared.length === 1")
+    text = page.evaluate("window.__shared[0].text")
+
+    # 1. The payload is data, not markup - it never re-enters the DOM, and it
+    #    must not smuggle executable content into whatever app receives it.
+    assert "<script" not in text.lower()
+    assert "javascript:" not in text.lower()
+    # 2. Rendering the payload changed nothing about the page's own safety.
+    assert page.evaluate("window.__pwned") is None
+    assert page.locator("img").count() == 0
+    # 3. Building and handing off the payload contacted no third origin.
+    assert external_requests == []

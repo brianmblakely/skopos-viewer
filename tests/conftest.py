@@ -133,6 +133,11 @@ def wire_page(page, store, external_requests, unmatched_api, api_log,
                 route.fulfill(status=304, headers={"ETag": COMMITS_ETAG, **expose})
             else:
                 route.fulfill(**full)
+        elif path.endswith("/contents/index/manifest.json"):
+            # The fixture store is in the single-file layout: it has no month
+            # files, so the viewer's first question is answered "not there"
+            # and it reads index.json + index.meta.json (Ampliphi #2719).
+            route.fulfill(status=404, body='{"message": "Not Found"}')
         elif path.endswith("/contents/index.json"):
             route.fulfill(
                 status=200,

@@ -6,7 +6,9 @@ Before starting work, read the Skopos increment store's `LATEST.md` - it is
 the digest of current work across all agents, active work on top. Store
 location: `SKOPOS_ROOT` env var if set, else `C:\Users\brian\skopos` (the
 flat sibling of this repo). Full records live in `increments/`; the machine
-index is `index.json`.
+index is one file per month (`index/YYYY-MM.json`, listed with each file's
+hash in `index/manifest.json`), or the single `index.json` in a store that
+has not been switched over (store `CONTRACT.md`, "Month files").
 
 If the local clone is missing, the store is
 `https://github.com/brianmblakely/skopos` (private; requires `gh`/auth).

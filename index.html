@@ -400,11 +400,115 @@ async function sha256hex12(bytes) {
     .map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
 }
 
-// Coherent-pair index load per the store CONTRACT.md:
+// The single-file layout: index.json + index.meta.json pinned to one commit,
+// the projection hash checked. Returns {entries, text}, or {torn: true} when
+// the pair does not agree.
+async function loadSingle(sha) {
+  const [idxRes, metaRes] = await Promise.all([
+    fetchWithRetry(contentsUrl("index.json", sha), { headers: headers() }),
+    fetchWithRetry(contentsUrl("index.meta.json", sha), { headers: headers() }),
+  ]);
+  if (!idxRes.ok) throw classify(idxRes);
+  const bytes = new Uint8Array(await idxRes.arrayBuffer());
+  let meta = null;
+  if (metaRes.ok) {
+    try { meta = JSON.parse(await metaRes.text()); } catch (e) { meta = null; }
+  } // 404 (or unparseable) meta = pre-contract store: treat as v1
+  const text = new TextDecoder().decode(bytes);
+  let parsed;
+  try { parsed = JSON.parse(text); } catch (e) {
+    throw apiError("schema", "index.json did not parse");
+  }
+  if (!Array.isArray(parsed)) {
+    // v2+ wraps the array in an object - this viewer speaks v1 only.
+    throw apiError("schema", "store schema is newer than this viewer");
+  }
+  if (meta && typeof meta.projection === "string") {
+    const hash = await sha256hex12(bytes);
+    if ("sha256:" + hash !== meta.projection) return { torn: true };
+  }
+  return { entries: parsed, text };
+}
+
+// The store's rule for month files (store CONTRACT.md, "Month files"):
+// months oldest first, the last entry seen for an id wins, then newest first
+// by created, ties by id.
+function mergeMonths(lists) {
+  const seen = new Map();
+  for (const list of lists) {
+    for (const e of list) {
+      if (!e || typeof e.id !== "string") continue;
+      seen.delete(e.id);
+      seen.set(e.id, e);
+    }
+  }
+  const when = (e) => {
+    const t = Date.parse(e.created || "");
+    return Number.isNaN(t) ? -Infinity : t;
+  };
+  return Array.from(seen.values()).sort((a, b) => {
+    const ta = when(a), tb = when(b);
+    if (ta !== tb) return tb - ta;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
+}
+
+// Month files already read in this page's lifetime, by month: {hash,
+// entries}. A reload after one write fetches the manifest and one month.
+const monthCache = new Map();
+const MANIFEST_SCHEMA_VERSION = 2;
+
+// The month-file layout (Ampliphi #2719): index/manifest.json names every
+// month and the hash of its file; each month file is fetched at the same
+// commit and its bytes are checked against that hash. Returns {entries,
+// text}, or {torn: true} when a month does not match its hash.
+async function loadMonths(manifestRes, sha) {
+  let manifest;
+  try { manifest = JSON.parse(await manifestRes.text()); } catch (e) {
+    throw apiError("schema", "the index manifest did not parse");
+  }
+  if (!manifest || manifest.schema_version !== MANIFEST_SCHEMA_VERSION ||
+      !manifest.months || typeof manifest.months !== "object") {
+    throw apiError("schema", "store schema is newer than this viewer");
+  }
+  const names = Object.keys(manifest.months).sort();
+  if (names.some((name) => !/^\d{4}-\d{2}$/.test(name))) {
+    throw apiError("schema", "the index manifest names a month this viewer cannot read");
+  }
+  const lists = await Promise.all(names.map(async (name) => {
+    const want = (manifest.months[name] || {}).sha256;
+    const held = monthCache.get(name);
+    if (held && held.hash === want) return held.entries;
+    const res = await fetchWithRetry(
+      contentsUrl("index/" + name + ".json", sha), { headers: headers() });
+    if (res.status === 404) return null; // named but not there: a torn read
+    if (!res.ok) throw classify(res);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if ("sha256:" + (await sha256hex12(bytes)) !== want) return null;
+    let parsed;
+    try { parsed = JSON.parse(new TextDecoder().decode(bytes)); } catch (e) {
+      throw apiError("schema", "index/" + name + ".json did not parse");
+    }
+    if (!Array.isArray(parsed)) {
+      throw apiError("schema", "store schema is newer than this viewer");
+    }
+    monthCache.set(name, { hash: want, entries: parsed });
+    return parsed;
+  }));
+  if (lists.some((list) => list === null)) return { torn: true };
+  const merged = mergeMonths(lists);
+  return { entries: merged, text: JSON.stringify(merged) };
+}
+
+// Coherent index load per the store CONTRACT.md:
 // resolve HEAD once (conditionally - a 304 is the cheap no-change path),
-// fetch index.json + index.meta.json pinned to that sha, verify the
-// projection hash, retry the pair exactly once on a torn write, then fail
-// open to the cached copy.
+// then read the index pinned to that sha in whichever layout the store has:
+// the month files when index/manifest.json is there, else index.json +
+// index.meta.json. Every file is checked against its recorded hash; a
+// mismatch re-resolves HEAD and reads again exactly once, then fails open
+// to the cached copy. The manifest is asked for first because index.json
+// stays in a month-file store as a nightly copy for another reader, so its
+// presence says nothing about the layout.
 async function loadIndex(force) {
   const commitOpts = { headers: headers() };
   const storedTag = localStorage.getItem(LS_COMMITS_ETAG);
@@ -420,42 +524,26 @@ async function loadIndex(force) {
   let sha = (await head.json()).sha;
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const [idxRes, metaRes] = await Promise.all([
-      fetchWithRetry(contentsUrl("index.json", sha), { headers: headers() }),
-      fetchWithRetry(contentsUrl("index.meta.json", sha), { headers: headers() }),
-    ]);
-    if (!idxRes.ok) throw classify(idxRes);
-    const bytes = new Uint8Array(await idxRes.arrayBuffer());
-    let meta = null;
-    if (metaRes.ok) {
-      try { meta = JSON.parse(await metaRes.text()); } catch (e) { meta = null; }
-    } // 404 (or unparseable) meta = pre-contract store: treat as v1
-    const text = new TextDecoder().decode(bytes);
-    let parsed;
-    try { parsed = JSON.parse(text); } catch (e) {
-      throw apiError("schema", "index.json did not parse");
-    }
-    if (!Array.isArray(parsed)) {
-      // v2+ wraps the array in an object - this viewer speaks v1 only.
-      throw apiError("schema", "store schema is newer than this viewer");
-    }
-    if (meta && typeof meta.projection === "string") {
-      const hash = await sha256hex12(bytes);
-      if ("sha256:" + hash !== meta.projection) {
-        if (attempt === 0) {
-          const again = await fetchWithRetry(API_BASE + "/commits/main", { headers: headers() });
-          if (again.ok) sha = (await again.json()).sha;
-          continue; // torn pair: one re-resolve + refetch, per contract
-        }
-        throw apiError("torn", "store temporarily inconsistent");
+    const manifestRes = await fetchWithRetry(
+      contentsUrl("index/manifest.json", sha), { headers: headers() });
+    let got;
+    if (manifestRes.ok) got = await loadMonths(manifestRes, sha);
+    else if (manifestRes.status === 404) got = await loadSingle(sha);
+    else throw classify(manifestRes);
+    if (got.torn) {
+      if (attempt === 0) {
+        const again = await fetchWithRetry(API_BASE + "/commits/main", { headers: headers() });
+        if (again.ok) sha = (await again.json()).sha;
+        continue; // torn read: one re-resolve + refetch, per contract
       }
+      throw apiError("torn", "store temporarily inconsistent");
     }
     try {
-      localStorage.setItem(LS_CACHE, text);
+      localStorage.setItem(LS_CACHE, got.text);
       const newTag = head.headers.get("ETag");
       if (newTag) localStorage.setItem(LS_COMMITS_ETAG, newTag);
     } catch (e) { /* storage full - live without cache */ }
-    return { entries: parsed, unchanged: false };
+    return { entries: got.entries, unchanged: false };
   }
 }
 
@@ -560,7 +648,9 @@ function chipsHTML(e) {
   if (e.trusted === false) chips += '<span class="chip unverified">[unverified]</span>';
   chips +=
     '<span class="chip">' + esc(e.status) + "</span>" +
-    '<span class="chip">' + esc(e.agent) + "</span>" +
+    // The writer and the machine it wrote on (Ampliphi #2719); a record
+    // from before machines had names shows the bare agent.
+    '<span class="chip">' + esc(e.node ? e.agent + "@" + e.node : e.agent) + "</span>" +
     '<span class="chip">' + esc((e.created || "").slice(0, 10)) + "</span>";
   return '<div class="chips">' + chips + "</div>";
 }

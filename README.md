@@ -15,8 +15,17 @@ Served by GitHub Pages: https://brianmblakely.github.io/skopos-viewer/
   meta tag pins that: the page cannot connect anywhere else.
 - Reads follow the store's machine contract (`CONTRACT.md` in the store):
   resolve HEAD once (ETag-conditional - unchanged stores cost one 304),
-  fetch `index.json` + `index.meta.json` pinned to that sha, verify the
-  projection hash, and fail open to the cached copy on any inconsistency.
+  then read the index pinned to that sha in whichever layout the store has
+  (Ampliphi #2719). When `index/manifest.json` is there, the index is one
+  file per month: each `index/YYYY-MM.json` the manifest names is fetched,
+  its bytes checked against the hash the manifest records, and the months
+  joined by the store's rule (oldest month first, the last entry for an id
+  wins, newest first). Otherwise it is `index.json` + `index.meta.json`,
+  with the projection hash checked. Any mismatch is read again once, then
+  the viewer fails open to the cached copy.
+- Each row shows who wrote the record and on which machine
+  (`claude-code@mac`); a record from before machines had names shows the
+  agent alone.
 - Increment bodies lazy-load on tap and are cached by id (increments are
   append-only and immutable), so previously read increments work offline.
 

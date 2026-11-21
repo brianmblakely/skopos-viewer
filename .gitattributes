@@ -1,0 +1,6 @@
+# The fixture store stands in for files fetched from GitHub, which arrive
+# with LF line endings whatever the machine. Without this a Windows checkout
+# turns them into CRLF, and the frontmatter of a fixture body is then drawn
+# as two extra rules (tests/test_markdown.py failed on Windows for that
+# reason alone; found during Ampliphi #2719).
+tests/fixtures/** text eol=lf
